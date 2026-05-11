@@ -20,6 +20,7 @@ from osdagbridge.core.bridge_types.plate_girder.ui_fields import FrontendData
 from osdagbridge.core.bridge_types.plate_girder.defaults import DEFAULTS_DICT
 from osdagbridge.core.utils.common import *
 from osdagbridge.desktop.ui.utils.custom_widgets import ToolBarWidget
+from osdagbridge.core.utils.logger import bridge_logger
 
 
 class CustomWindow(QWidget):
@@ -373,19 +374,32 @@ class CustomWindow(QWidget):
         return True  # Validation passed
     
     def _start_loading(self):
-        """Start loading popup"""
+        """Start the analysis progress dialog and wire bridge_logger to it."""
         import time
         self.loading = LoadingDialogManager()
         self.loading.show()
         self.setEnabled(False)
+
+        _log_cb  = self.logs_dock.append_log
+        _loading = self.loading
+
+        def _chained(msg: str, level: str) -> None:
+            _log_cb(msg, level)                  # → log dock
+            _loading.send_message(msg, level)    # → progress dialog
+            # If Stop button was pressed, signal bridge_logger to abort
+            if _loading.is_cancelled():
+                bridge_logger.cancel()
+
+        bridge_logger.set_callback(_chained)
         time.sleep(1)
-    
+
     def _finish_loading(self):
-        """Close the loading dialog box"""
+        """Close the analysis progress dialog and restore the log dock callback."""
         import time
         time.sleep(1)
         if hasattr(self, 'loading') and self.loading is not None:
             self.loading.hide()
+        bridge_logger.set_callback(self.logs_dock.append_log)
         self.setEnabled(True)
             
     def common_design_func(self, trigger: str):
@@ -410,35 +424,45 @@ class CustomWindow(QWidget):
         self.input_dict.update(additional_inputs_dict)
 
         if trigger == "Design":
-            
+
             # Start-Loading-popup---------------------------------------------
             self._start_loading()
-            
-            # Collect all the values from input Dock and pass to backend
-            self.backend.set_input(self.input_dict)
-            self.backend.design()
-            self.output_dock.refresh_utilization()
+            _cancelled = False
+            try:
+                # Collect all the values from input Dock and pass to backend
+                self.backend.set_input(self.input_dict)
+                self.backend.design()
+                self.output_dock.refresh_utilization()
 
-            # Lock the input dock after design is triggered
-            if self.input_dock and not self.input_dock.is_locked:
-                self.input_dock.toggle_lock()
+                # Lock the input dock after design is triggered
+                if self.input_dock and not self.input_dock.is_locked:
+                    self.input_dock.toggle_lock()
 
-            # Wire up the plots widget with results from the completed analysis
-            ds_all = self.backend.get_results_dataset()
-            loadcases = self.backend.get_available_loadcases()
-            nodes, members = self.backend.get_nodes_members()
-            edge_dist = self.backend.get_edge_dist()
-            self.plots_widget.setup(ds_all, loadcases, nodes, members, edge_dist=edge_dist)
-            self.plots_widget.link_output_dock(self.output_dock)
+                # Wire up the plots widget with results from the completed analysis
+                ds_all = self.backend.get_results_dataset()
+                loadcases = self.backend.get_available_loadcases()
+                nodes, members = self.backend.get_nodes_members()
+                edge_dist = self.backend.get_edge_dist()
+                self.plots_widget.setup(ds_all, loadcases, nodes, members, edge_dist=edge_dist)
+                self.plots_widget.link_output_dock(self.output_dock)
 
-            # Render 3D cad using the parameters from Backend
-            self.cad_3d_widget.render_3d_cad(self.backend.get_3d_cad_parameters())
+                # Render 3D cad using the parameters from Backend
+                self.cad_3d_widget.render_3d_cad(self.backend.get_3d_cad_parameters())
 
-            # Close-loading-popup---------------------------------------------
-            self._finish_loading()
+            except RuntimeError as exc:
+                if "cancelled" in str(exc).lower():
+                    _cancelled = True
+                    bridge_logger.warning("Analysis was stopped by the user.")
+                else:
+                    bridge_logger.error(f"Analysis failed: {exc}")
 
-            # Focus 3D-Cad widget
-            self.cad_3d_view_toggle(force_show=True)
+            finally:
+                # Close-loading-popup-----------------------------------------
+                self._finish_loading()
+
+            # Focus 3D-Cad widget only on successful completion
+            if not _cancelled:
+                self.cad_3d_view_toggle(force_show=True)
 
         elif trigger == "Save":
             # Collect all the values from input Dock and save to osi/csv

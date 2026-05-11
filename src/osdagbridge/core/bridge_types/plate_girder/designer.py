@@ -28,6 +28,7 @@ from osdagbridge.core.utils.codes.keyfile import (
     DCR_FAIL_THRESHOLD,
 )
 from osdagbridge.core.utils.codes.is800_2007 import IS800_2007
+from osdagbridge.core.utils.logger import bridge_logger
 
 
 # IRC 22:2015 Cl.601.4 Table 1 — partial safety factors (pulled once at import).
@@ -2706,12 +2707,10 @@ def run_design_check(
         demand       : DemandEnvelope (default: example demands)
         print_report : print report to console
     """
-    print("=" * 60)
-    print("  IRC 22:2015 DESIGN CHECK PIPELINE")
-    print("=" * 60)
+    bridge_logger.sub_step("IRC 22:2015 DESIGN CHECK PIPELINE")
 
     # -- Step 1: Configuration --
-    print("\n[Step 1/5] Loading bridge configuration ...")
+    bridge_logger.sub_step("LOADING BRIDGE CONFIGURATION")
     if plate_girder_bridge is not None:
         config = BridgeConfig.from_plate_girder_bridge(plate_girder_bridge)
     elif config is None:
@@ -2719,22 +2718,21 @@ def run_design_check(
     # Always run stiffener guidance even when no stiffener details are provided.
     if config.stiffener is None:
         config.stiffener = StiffenerConfig()
-    print(f"  Config: {config.summary()}")
+    bridge_logger.sub_step(f"CONFIG               : {config.summary()}")
 
     # -- Step 2: Demand from Analyser --
-    print("\n[Step 2/5] Extracting design demands (Analyser) ...")
+    bridge_logger.sub_step("EXTRACTING DESIGN DEMANDS")
     if demand is None and analysis_results is not None:
         demand = _extract_demands_from_analysis(analysis_results, config)
     elif demand is None:
         demand = _example_demands(config)
-    print(f"  Mu              = {demand.Mu_kNm:.2f} kNm")
-    print(f"  Vu              = {demand.Vu_kN:.2f} kN")
-    print(f"  M_construction  = {demand.M_construction_kNm:.2f} kNm")
-    print(f"  delta_live      = {demand.delta_live_mm:.3f} mm")
-    print(f"  delta_total     = {demand.delta_total_mm:.3f} mm")
-    print(f"  stress_range    = {demand.stress_range_MPa:.3f} MPa")
-    print(f"  shear_range     = {demand.shear_range_MPa:.3f} MPa")
-    print(f"  Source: {demand.source}")
+    bridge_logger.sub_step(f"Mu (factored)        : {demand.Mu_kNm:.2f} kNm")
+    bridge_logger.sub_step(f"Vu (factored)        : {demand.Vu_kN:.2f} kN")
+    bridge_logger.sub_step(f"M_construction       : {demand.M_construction_kNm:.2f} kNm")
+    bridge_logger.sub_step(f"delta_live           : {demand.delta_live_mm:.3f} mm")
+    bridge_logger.sub_step(f"delta_total          : {demand.delta_total_mm:.3f} mm")
+    bridge_logger.sub_step(f"stress_range         : {demand.stress_range_MPa:.3f} MPa")
+    bridge_logger.sub_step(f"DEMAND SOURCE        : {demand.source}")
 
     # For a simply-supported beam, max shear = end reaction → use as bearing stiffener load.
     # Only set when the caller hasn't already supplied a reaction.
@@ -2821,24 +2819,28 @@ def run_design_check(
                   f"tq_req (leg)>={bs_det['tq_req_leg_mm']:.2f} mm")
 
     # -- Step 4: DCR Engine --
-    print("\n[Step 4/5] Running DCR checks ...")
+    bridge_logger.sub_step("RUNNING IRC 22:2015 DCR CHECKS")
     engine = DCREngine(demand, capacity)
     checks = engine.run_all_checks()
     for chk in checks:
         icon = {"PASS": "+", "WARN": "~", "FAIL": "X"}.get(chk.status, "?")
-        print(f"  [{icon}] {chk.name:<28} DCR = {chk.dcr:.3f}  {chk.status}")
+        msg = f"[{icon}] {chk.name:<28}  DCR={chk.dcr:.3f}  {chk.status}"
+        if chk.status == "PASS":
+            bridge_logger.success(msg)
+        elif chk.status == "WARN":
+            bridge_logger.warning(msg)
+        elif chk.status == "FAIL":
+            bridge_logger.error(msg)
+        else:
+            bridge_logger.info(msg)
 
     # -- Step 5: Report --
-    print("\n[Step 5/5] Generating report ...")
+    bridge_logger.sub_step("GENERATING DESIGN REPORT")
     reporter = ReportGenerator(config, demand, capacity, engine)
     report_text = reporter.generate()
 
     if print_report:
         print("\n" + report_text)
-
-    print("\n" + "=" * 60)
-    print(f"  PIPELINE COMPLETE - Overall: {engine.overall_status()}")
-    print("=" * 60)
 
     return report_text, engine
 

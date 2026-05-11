@@ -84,6 +84,7 @@ from osdagbridge.core.bridge_components.super_structure.crash_barrier.geometry i
 from osdagbridge.core.bridge_components.super_structure.railing.geometry import (
     railing_load_from_inputs,
 )
+from osdagbridge.core.utils.logger import bridge_logger
 
 # Default median width (m) used when user enables median but no additional-input
 # width has been supplied yet.
@@ -172,54 +173,83 @@ class PlateGirderBridge:
 
     def design(self) -> None:
         """
-        Run the full initial-sizing pipeline in order:
-          1. Parse basic inputs
-          2. Solve bridge layout
-          3. Build result DTOs
-          4. Set up grillage model geometry and sections
-          5. Apply dead loads
-          6. Apply live loads
+        Run the full analysis/design pipeline in 8 logged stages:
+          1. Input parsing              5. Dead load application
+          2. Bridge layout solving      6. Live load application
+          3. DTO construction           7. Structural analysis
+          4. Grillage setup             8. Design checks (IRC 22:2015)
         """
+        bridge_logger.analysis_start()
+
+        # ── Stage 1: Input Parsing ──────────────────────────────────────────
+        bridge_logger.stage_start(1)
         parsed = self._parse_basic_inputs()
+        bridge_logger.info(f"SPAN                     : {parsed['span']:.1f} m")
+        bridge_logger.info(f"CARRIAGEWAY WIDTH        : {parsed['cw_width']:.2f} m")
+        bridge_logger.info(f"SKEW ANGLE               : {parsed['skew_angle']:.1f} deg")
+        bridge_logger.info(f"FOOTPATHS                : {parsed['n_footpaths']}")
+        bridge_logger.info(f"DESIGN MODE              : {parsed['design_mode']}")
+        bridge_logger.stage_complete(1)
+
+        bridge_logger.check_cancel()
+        # ── Stage 2: Bridge Layout Solving ─────────────────────────────────
+        bridge_logger.stage_start(2)
         self._solve_bridge_layout(parsed)
-        self._build_dtos(parsed)
-        self.setup_grillage()
-        self.add_dead_loads()
-        self.add_live_loads()
-        dataset = self.analyze()
-
-        sp = self.section_props
         sr = self.sizing_result
-        print(
-            f"\n{'-'*60}\n"
-            f"  PLATE GIRDER BRIDGE - DESIGN SUMMARY\n"
-            f"{'-'*60}\n"
-            f"  Span                  : {parsed['span']:.1f} m\n"
-            f"  Overall width         : {sr.overall_width:.3f} m\n"
-            f"  No. of girders        : {sr.no_of_girders}\n"
-            f"  Girder spacing        : {sr.girder_spacing * 1e3:.1f} mm\n"
-            f"  Deck overhang         : {sr.deck_overhang * 1e3:.1f} mm\n"
-            f"{'-'*60}\n"
-            f"  GIRDER CROSS-SECTION (all dimensions in mm)\n"
-            f"{'-'*60}\n"
-            f"  Total depth      D    : {sp['D']     * 1e3:.1f}\n"
-            f"  Web depth        d_w  : {sp['d_web'] * 1e3:.1f}\n"
-            f"  Web thickness    t_w  : {sp['t_w']   * 1e3:.1f}\n"
-            f"  Top flange width B_ft : {sp['B_top']   * 1e3:.1f}\n"
-            f"  Top flange thk   T_ft : {sp['t_f_top'] * 1e3:.1f}\n"
-            f"  Bot flange width B_fb : {sp.get('B_bot',   sp['B_top'])   * 1e3:.1f}\n"
-            f"  Bot flange thk   T_fb : {sp.get('t_f_bot', sp['t_f_top']) * 1e3:.1f}\n"
-            f"{'-'*60}\n"
-            f"  SECTION PROPERTIES (SI units)\n"
-            f"{'-'*60}\n"
-            f"  Area   A  : {sp['Area']:.6f} m^2\n"
-            f"  I_z       : {sp['I_z']:.6f} m^4\n"
-            f"  I_y       : {sp['I_y']:.6f} m^4\n"
-            f"  I_t (J)   : {sp['I_t']:.6f} m^3\n"
-            f"{'-'*60}\n"
+        sp = self.section_props
+        bridge_logger.info(f"NO. OF GIRDERS           : {sr.no_of_girders}")
+        bridge_logger.info(f"OVERALL WIDTH            : {sr.overall_width:.3f} m")
+        bridge_logger.info(f"GIRDER SPACING           : {sr.girder_spacing * 1e3:.1f} mm")
+        bridge_logger.info(f"DECK OVERHANG            : {sr.deck_overhang * 1e3:.1f} mm")
+        bridge_logger.info(f"SECTION DEPTH  D         : {sp['D'] * 1e3:.1f} mm")
+        bridge_logger.info(f"WEB DEPTH      d_w        : {sp['d_web'] * 1e3:.1f} mm")
+        bridge_logger.info(f"WEB THICKNESS  t_w        : {sp['t_w'] * 1e3:.1f} mm")
+        bridge_logger.info(
+            f"TOP FLANGE     B x T      : "
+            f"{sp['B_top'] * 1e3:.0f} x {sp['t_f_top'] * 1e3:.0f} mm"
         )
+        bridge_logger.info(f"AREA  A                  : {sp['Area']:.6f} m²")
+        bridge_logger.info(f"I_z                      : {sp['I_z']:.6f} m⁴")
+        bridge_logger.stage_complete(2)
 
+        bridge_logger.check_cancel()
+        # ── Stage 3: DTO Construction ──────────────────────────────────────
+        bridge_logger.stage_start(3)
+        self._build_dtos(parsed)
+        bridge_logger.info(f"GRILLAGE LONG. LINES n_l : {self.grillage_geometry.n_l}")
+        bridge_logger.info(f"GRILLAGE TRANS. LINES n_t: {self.grillage_geometry.n_t}")
+        bridge_logger.stage_complete(3)
+
+        bridge_logger.check_cancel()
+        # ── Stage 4: Grillage Setup ────────────────────────────────────────
+        bridge_logger.stage_start(4)
+        self.setup_grillage()
+        bridge_logger.stage_complete(4)
+
+        bridge_logger.check_cancel()
+        # ── Stage 5: Dead Load Application ────────────────────────────────
+        bridge_logger.stage_start(5)
+        self.add_dead_loads()
+        bridge_logger.stage_complete(5)
+
+        bridge_logger.check_cancel()
+        # ── Stage 6: Live Load Application ────────────────────────────────
+        bridge_logger.stage_start(6)
+        self.add_live_loads()
+        bridge_logger.stage_complete(6)
+
+        bridge_logger.check_cancel()
+        # ── Stage 7: Structural Analysis ───────────────────────────────────
+        bridge_logger.stage_start(7)
+        dataset = self.analyze()
+        bridge_logger.stage_complete(7)
+
+        # ── Stage 8: Design Checks ─────────────────────────────────────────
+        bridge_logger.stage_start(8)
         self._run_dcr_checks(dataset)
+        bridge_logger.stage_complete(8)
+
+        bridge_logger.analysis_complete()
 
     def _parse_basic_inputs(self) -> dict:
         """Extract and normalise scalar values from ``self.basic_inputs``."""
@@ -275,12 +305,6 @@ class PlateGirderBridge:
             changed_field="girders",
         )
 
-        # Debug print for sizing result
-        print("[DEBUG] Bridge Layout Sizing Result:")
-        print(f"  overall_width = {sizing_result.overall_width} m")
-        print(f"  no_of_girders = {sizing_result.no_of_girders}")
-        print(f"  girder_spacing = {sizing_result.girder_spacing} m")
-        print(f"  deck_overhang = {sizing_result.deck_overhang} m")
 
         symmetry = (
             DEFAULT_GIRDER_SYMMETRY
@@ -692,6 +716,12 @@ class PlateGirderBridge:
         self._frontend.set_output_value(KEY_UTIL_LONG_TRANS_SHEAR,  trans_shear_dcr * 100)
         stress_dcr = max(dcr_by_id.get(10, 0.0), dcr_by_id.get(11, 0.0), dcr_by_id.get(12, 0.0))
         self._frontend.set_output_value(KEY_UTIL_STRESS_LIMITATION, stress_dcr * 100)
+
+        overall = engine.overall_status()
+        _log_fn = {"PASS": bridge_logger.success, "WARN": bridge_logger.warning}.get(
+            overall, bridge_logger.error
+        )
+        _log_fn(f"OVERALL STATUS : {overall}  (max DCR = {engine.max_dcr():.3f})")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Plotting

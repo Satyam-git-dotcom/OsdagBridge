@@ -30,6 +30,7 @@ from osdagbridge.core.bridge_types.plate_girder.load_placement import LoadPlacem
 import warnings
 from osdagbridge.core.bridge_types.plate_girder.analysis_results import PlateGirderAnalysisResults
 from osdagbridge.core.bridge_types.plate_girder.dto import (SectionProperties, SteelProperties, MaterialProperties, GrillageGeometry, DeckLayoutProperties)
+from osdagbridge.core.utils.logger import bridge_logger
 
 
 class BridgeGrillageModel:
@@ -125,7 +126,7 @@ class BridgeGrillageModel:
             span=self.L,
             width=self.layout.total_width,
         )
-        print(f"Bridge width from layout: {self.layout.total_width} m")
+        bridge_logger.sub_step(f"BRIDGE TOTAL WIDTH       : {self.layout.total_width:.3f} m")
 
         # self.layout.validate_against_bridge(self.bridge_geometry.width)
 
@@ -190,6 +191,7 @@ class BridgeGrillageModel:
             Ay=end_transverse.Ay,
             Az=end_transverse.Az,
         )
+        bridge_logger.sub_step("SECTIONS CREATED         : longitudinal, edge, transverse, end-transverse")
 
     # ============================================================
     #   CREATE MATERIAL
@@ -206,6 +208,11 @@ class BridgeGrillageModel:
         self.steel_custom = og.create_material(
             material="steel", E=props.steel_prop.E, v=props.steel_prop.v, rho=props.steel_prop.rho,
             Fy=props.steel_prop.Fy, E0=props.steel_prop.E0, b=props.steel_prop.b
+        )
+        bridge_logger.sub_step(
+            f"STEEL MATERIAL           : {props.steel_prop.grade}  "
+            f"E={props.steel_prop.E / 1e9:.0f} GPa  "
+            f"fy={props.steel_prop.Fy / 1e6:.0f} MPa"
         )
 
     def assign_members(self):
@@ -228,6 +235,7 @@ class BridgeGrillageModel:
         self.end_transverse_slab = og.create_member(
             section=self.end_transverse_section, material=self.steel_custom
         )
+        bridge_logger.sub_step("MEMBERS ASSIGNED         : interior, exterior, edge, transverse, end-transverse")
 
     # ============================================================
     #   CREATE THE GRILLAGE MODEL
@@ -247,6 +255,10 @@ class BridgeGrillageModel:
         # -------------------------------------------------
         self.w = self.bridge_geometry.width
 
+        bridge_logger.sub_step(
+            f"BUILDING GRILLAGE MESH   : {self.n_l} long × {self.n_t} trans  "
+            f"L={self.L:.1f} m  w={self.w:.3f} m  skew={self.angle}°"
+        )
         self.model = og.create_grillage(
             bridge_name="Osdag Bridge",
             long_dim=self.L,
@@ -254,7 +266,7 @@ class BridgeGrillageModel:
             skew=self.angle,
             num_long_grid=self.n_l,
             num_trans_grid=self.n_t,
-            edge_beam_dist=self.edge_dist,                                    
+            edge_beam_dist=self.edge_dist,
             ext_to_int_dist=self.ext_to_int_dist,
             mesh_type="Oblique"  # ('Ortho' or 'Oblique')
         )
@@ -275,6 +287,7 @@ class BridgeGrillageModel:
 
         # Generate OpenSees model
         self.model.create_osp_model(pyfile=False)
+        bridge_logger.sub_step("OPENSEES MODEL CREATED   : grillage mesh generated")
 
         # update geometry with model
         # self.geometry.model = self.model
@@ -322,7 +335,7 @@ class BridgeGrillageModel:
         end_beam = L
         A_girder_m2 = self.longitudinal_props.A
         beam_mag = girder_self_weight_kN_m(A_girder_m2, STEEL_UNIT_WEIGHT_kN_m3) * kN / m  # N/m
-        print(f"Self weight line load magnitude: {beam_mag:.2f} N/m")
+        bridge_logger.sub_step(f"SELF WEIGHT UDL          : {beam_mag:.2f} N/m")
         DL_self_weight = og.create_load_case(name="girder self weight")
 
         # iterate through all grillage transverse positions (except extreme edges)
@@ -381,7 +394,7 @@ class BridgeGrillageModel:
         # Load magnitude (UDL over area): t × ρ_concrete  [kN/m²]
         # -------------------------------------------------
         deck_mag = slab_dead_load_kN_m2(slab_thickness_m, rho_c) * kN / m**2  # N/m²
-        print(f"Deck slab load magnitude: {deck_mag:.2f} N/m²")
+        bridge_logger.sub_step(f"DECK SLAB LOAD           : {deck_mag:.2f} N/m²")
 
         # -------------------------------------------------
         # Get geometry from load manager
@@ -459,7 +472,7 @@ class BridgeGrillageModel:
             )
         overlay_kw = {} if density_kN_m3 is None else {"density_kN_m3": density_kN_m3}
         overlay_mag = wearing_course_dead_load_kN_m2(thickness_m, **overlay_kw) * kN / m**2  # N/m²
-        print(f"Wearing course load magnitude: {overlay_mag:.2f} N/m²")
+        bridge_logger.sub_step(f"WEARING COURSE LOAD      : {overlay_mag:.2f} N/m²")
         # --------------------------------
         # Get geometry from geometry module
         # --------------------------------
@@ -522,7 +535,7 @@ class BridgeGrillageModel:
         # Load magnitude — IRC 6:2017 Cl.206.1 (footway load)
         # -------------------------------------------------
         footpath_mag = footpath_dead_load_kN_m2() * kN / m**2  # N/m²
-        print(f"Footpath load magnitude: {footpath_mag:.2f} N/m²")
+        bridge_logger.sub_step(f"FOOTPATH LOAD            : {footpath_mag:.2f} N/m²")
 
         # -------------------------------------------------
         # Create load case
@@ -536,12 +549,8 @@ class BridgeGrillageModel:
             # geometry from load manager
             geom = self.load_manager.footpath_load(side)
 
-            print(
-                f"[Footpath {side}] patch corners: "
-                f"p1(x={geom.p1.x:.3f}, z={geom.p1.z:.3f})  "
-                f"p2(x={geom.p2.x:.3f}, z={geom.p2.z:.3f})  "
-                f"p3(x={geom.p3.x:.3f}, z={geom.p3.z:.3f})  "
-                f"p4(x={geom.p4.x:.3f}, z={geom.p4.z:.3f})"
+            bridge_logger.sub_step(
+                f"FOOTPATH {side.upper():<5}  PATCH    : z={geom.p1.z:.3f} to {geom.p3.z:.3f} m"
             )
 
             # convert geometry → ospgrillage vertices
@@ -610,7 +619,7 @@ class BridgeGrillageModel:
         # Load magnitude — from input or IRC 5:2015 default (crash_barrier.geometry)
         # -------------------------------------------------
         barrier_load = crash_barrier_dead_load_kN_m(barrier_load_kN_per_m) * kN / m
-        print(f"Crash barrier line load magnitude: {barrier_load:.2f} N/m")
+        bridge_logger.sub_step(f"CRASH BARRIER LOAD       : {barrier_load:.2f} N/m")
         # -------------------------------------------------
         # Create load case
         # -------------------------------------------------
@@ -623,10 +632,8 @@ class BridgeGrillageModel:
             # geometry from load manager
             geom = self.load_manager.crash_barrier_load(side)
 
-            print(
-                f"[Crash barrier {side}] line load: "
-                f"start(x={geom.start.x:.3f}, z={geom.start.z:.3f})  "
-                f"end(x={geom.end.x:.3f}, z={geom.end.z:.3f})"
+            bridge_logger.sub_step(
+                f"BARRIER {side.upper():<5}  LINE     : z={geom.start.z:.3f} m"
             )
 
             # convert geometry → ospgrillage vertices
@@ -687,7 +694,7 @@ class BridgeGrillageModel:
         # Load magnitude — from user input or IRC 6:2017 Cl.206.5 default (railing.geometry)
         # -------------------------------------------------
         railing_udl = railing_dead_load_kN_m(railing_load_kN_per_m) * kN / m  # N/m
-        print(f"Railing line load magnitude: {railing_udl:.2f} N/m")
+        bridge_logger.sub_step(f"RAILING LOAD             : {railing_udl:.2f} N/m")
 
         # -------------------------------------------------
         # Create load case
@@ -701,10 +708,8 @@ class BridgeGrillageModel:
             # geometry from load manager
             geom = self.load_manager.railing_load(side)
 
-            print(
-                f"[Railing {side}] line load: "
-                f"start(x={geom.start.x:.3f}, z={geom.start.z:.3f})  "
-                f"end(x={geom.end.x:.3f}, z={geom.end.z:.3f})"
+            bridge_logger.sub_step(
+                f"RAILING {side.upper():<5}  LINE     : z={geom.start.z:.3f} m"
             )
 
             # convert geometry → ospgrillage vertices
@@ -758,7 +763,7 @@ class BridgeGrillageModel:
         # Load magnitude — from input or default (median.geometry)
         # -------------------------------------------------
         median_udl = median_dead_load_kN_m(median_load_kN_per_m) * kN / m
-        print(f"Median line load magnitude: {median_udl:.2f} N/m")
+        bridge_logger.sub_step(f"MEDIAN LOAD              : {median_udl:.2f} N/m")
 
         # If there is no median component in the layout, skip creating median load
         if not self.layout.has_component("median"):
@@ -771,11 +776,7 @@ class BridgeGrillageModel:
         # -------------------------------------------------
         geom = self.load_manager.median_line_load()
 
-        print(
-            f"[Median] line load: "
-            f"start(x={geom.start.x:.3f}, z={geom.start.z:.3f})  "
-            f"end(x={geom.end.x:.3f}, z={geom.end.z:.3f})"
-        )
+        bridge_logger.sub_step(f"MEDIAN LINE              : z={geom.start.z:.3f} m")
 
         # -------------------------------------------------
         # Convert geometry → ospgrillage vertices
@@ -1286,7 +1287,9 @@ class BridgeGrillageModel:
         if model is None:
             raise ValueError("Model not created")
 
+        bridge_logger.sub_step("RUNNING OPENSEES SOLVER")
         model.analyze()
+        bridge_logger.sub_step("RETRIEVING RESULTS DATASET")
 
         results = model.get_results()
         return results
